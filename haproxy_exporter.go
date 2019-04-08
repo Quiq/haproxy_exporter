@@ -89,7 +89,6 @@ func (m metrics) String() string {
 	return strings.Join(s, ",")
 }
 
-var haproxyUp = prometheus.NewDesc(prometheus.BuildFQName(namespace, "", "up"), "Was the last scrape of haproxy successful.", nil, nil)
 var serverMetricsString = "2,3,4,5,6,7,8,9,13,14,15,16,17,18,21,24,33,35,38,39,40,41,42,43,44"
 
 func addLabel(origin, add prometheus.Labels) prometheus.Labels {
@@ -128,7 +127,9 @@ func NewExporter(uri string, sslVerify bool, timeout time.Duration, labels prome
 	case "http", "https", "file":
 		fetch = fetchHTTP(uri, sslVerify, timeout)
 	case "unix":
-		fetch = fetchUnix(u, timeout)
+		fetch = fetchAddress("unix", u.Path, timeout)
+	case "tcp":
+		fetch = fetchAddress("tcp", u.Host, timeout)
 	default:
 		return nil, fmt.Errorf("unsupported scheme: %q", u.Scheme)
 	}
@@ -250,7 +251,7 @@ func (e *Exporter) Describe(ch chan<- *prometheus.Desc) {
 	for _, m := range e.serverMetrics {
 		ch <- m
 	}
-	ch <- haproxyUp
+	ch <- e.up.Desc()
 	ch <- e.totalScrapes.Desc()
 	ch <- e.csvParseFailures.Desc()
 }
@@ -263,7 +264,7 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 
 	up := e.scrape(ch)
 
-	ch <- prometheus.MustNewConstMetric(haproxyUp, prometheus.GaugeValue, up)
+	ch <- prometheus.MustNewConstMetric(e.up.Desc(), prometheus.GaugeValue, up)
 	ch <- e.totalScrapes
 	ch <- e.csvParseFailures
 }
@@ -288,9 +289,9 @@ func fetchHTTP(uri string, sslVerify bool, timeout time.Duration) func() (io.Rea
 	}
 }
 
-func fetchUnix(u *url.URL, timeout time.Duration) func() (io.ReadCloser, error) {
+func fetchAddress(network, address string, timeout time.Duration) func() (io.ReadCloser, error) {
 	return func() (io.ReadCloser, error) {
-		f, err := net.DialTimeout("unix", u.Path, timeout)
+		f, err := net.DialTimeout(network, address, timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -434,7 +435,7 @@ func (e *Exporter) filterServerMetrics(filter string) error {
 		}
 		selected[field] = struct{}{}
 	}
-	log.Infoln(e.serverMetrics)
+	log.Debugln(e.serverMetrics)
 	for field, metric := range e.serverMetrics {
 		if _, ok := selected[field]; ok {
 			metrics[field] = metric
@@ -478,7 +479,7 @@ func main() {
 		for i, uri := range strings.Split(*haProxyScrapeURIs, ",") {
 
 			log.Infoln("Added socker uri: ", uri)
-			exporter, err := NewExporter(*haProxyScrapeURI, *haProxySSLVerify, *haProxyTimeout, prometheus.Labels{"socket": uri})
+			exporter, err := NewExporter(uri, *haProxySSLVerify, *haProxyTimeout, prometheus.Labels{"socket": uri})
 			if err != nil {
 				log.Fatal(err)
 			}
