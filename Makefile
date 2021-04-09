@@ -11,6 +11,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Needs to be defined before including Makefile.common to auto-generate targets
+DOCKER_ARCHS ?= amd64 armv7 arm64 ppc64le s390x
+DOCKER_IMAGE_NAME ?= haproxy-exporter
+
+all:: vet checkmetrics common-all
+
 include Makefile.common
 
-DOCKER_IMAGE_NAME       ?= haproxy-exporter
+PROMTOOL_DOCKER_IMAGE ?= $(shell docker pull -q quay.io/prometheus/prometheus:latest || echo quay.io/prometheus/prometheus:latest)
+PROMTOOL ?= docker run -i --rm -w "$(PWD)" -v "$(PWD):$(PWD)" --entrypoint promtool $(PROMTOOL_DOCKER_IMAGE)
+
+.PHONY: checkmetrics
+checkmetrics:
+	@echo ">> checking metrics for correctness"
+	for file in test/*.metrics; do $(PROMTOOL) check metrics < $$file || exit 1; done

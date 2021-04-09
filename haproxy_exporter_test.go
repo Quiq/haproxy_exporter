@@ -27,11 +27,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-kit/kit/log"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
 
-const testSocket = "/tmp/haproxyexportertest.sock"
+const (
+	testSocket = "/tmp/haproxyexportertest.sock"
+	testInfo   = "Release_date: test date\nVersion: test version\n"
+)
 
 type haproxy struct {
 	*httptest.Server
@@ -70,7 +74,7 @@ func TestInvalidConfig(t *testing.T) {
 	h := newHaproxy([]byte("not,enough,fields"))
 	defer h.Close()
 
-	e, _ := NewExporter(h.URL, true, 5*time.Second, nil)
+	e, _ := NewExporter(h.URL, true, excludedServerStates, 5*time.Second, nil, log.NewNopLogger())
 
 	expectMetrics(t, e, "invalid_config.metrics")
 }
@@ -79,7 +83,7 @@ func TestServerWithoutChecks(t *testing.T) {
 	h := newHaproxy([]byte("test,127.0.0.1:8080,0,0,0,0,0,0,0,0,,0,,0,0,0,0,no check,1,1,0,0,,,0,,1,1,1,,0,,2,0,,0,,,,0,0,0,0,0,0,0,,,,0,0,,,,,,,,,,,"))
 	defer h.Close()
 
-	e, _ := NewExporter(h.URL, true, 5*time.Second, nil)
+	e, _ := NewExporter(h.URL, true, excludedServerStates, 5*time.Second, nil, log.NewNopLogger())
 
 	expectMetrics(t, e, "server_without_checks.metrics")
 }
@@ -97,7 +101,7 @@ foo,BACKEND,0,0,0,0,,0,0,0,,0,,0,0,0,0,UP,1,1,0,0,0,5007,0,,1,8,1,,0,,2,0,,0,L4O
 	h := newHaproxy([]byte(data))
 	defer h.Close()
 
-	e, _ := NewExporter(h.URL, true, 5*time.Second, nil)
+	e, _ := NewExporter(h.URL, true, excludedServerStates, 5*time.Second, nil, log.NewNopLogger())
 
 	expectMetrics(t, e, "server_broken_csv.metrics")
 }
@@ -110,7 +114,7 @@ foo,BACKEND,0,0,0,0,,0,0,0,,0,,0,0,0,0,UP,1,1,0,0,0,5007,0,,1,8,1,,0,,2,
 	h := newHaproxy([]byte(data))
 	defer h.Close()
 
-	e, _ := NewExporter(h.URL, true, 5*time.Second, nil)
+	e, _ := NewExporter(h.URL, true, excludedServerStates, 5*time.Second, nil, log.NewNopLogger())
 
 	expectMetrics(t, e, "older_haproxy_versions.metrics")
 }
@@ -119,7 +123,7 @@ func TestConfigChangeDetection(t *testing.T) {
 	h := newHaproxy([]byte(""))
 	defer h.Close()
 
-	e, _ := NewExporter(h.URL, true, 5*time.Second, nil)
+	e, _ := NewExporter(h.URL, true, excludedServerStates, 5*time.Second, nil, log.NewNopLogger())
 	ch := make(chan prometheus.Metric)
 
 	go func() {
@@ -146,7 +150,7 @@ func TestDeadline(t *testing.T) {
 		s.Close()
 	}()
 
-	e, err := NewExporter(s.URL, true, 1*time.Second, nil)
+	e, err := NewExporter(s.URL, true, excludedServerStates, 1*time.Second, nil, log.NewNopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +162,7 @@ func TestNotFound(t *testing.T) {
 	s := httptest.NewServer(http.NotFoundHandler())
 	defer s.Close()
 
-	e, err := NewExporter(s.URL, true, 1*time.Second, nil)
+	e, err := NewExporter(s.URL, true, excludedServerStates, 1*time.Second, nil, log.NewNopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +170,7 @@ func TestNotFound(t *testing.T) {
 	expectMetrics(t, e, "not_found.metrics")
 }
 
-func newHaproxyUnix(file, statsPayload string) (io.Closer, error) {
+func newHaproxyUnix(file, statsPayload string, infoPayload string) (io.Closer, error) {
 	if err := os.Remove(file); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -189,6 +193,9 @@ func newHaproxyUnix(file, statsPayload string) (io.Closer, error) {
 						return
 					}
 					switch l {
+					case "show info\n":
+						c.Write([]byte(infoPayload))
+						return
 					case "show stat\n":
 						c.Write([]byte(statsPayload))
 						return
@@ -208,13 +215,13 @@ func TestUnixDomain(t *testing.T) {
 		t.Skip("not on windows")
 		return
 	}
-	srv, err := newHaproxyUnix(testSocket, "test,127.0.0.1:8080,0,0,0,0,0,0,0,0,,0,,0,0,0,0,no check,1,1,0,0,,,0,,1,1,1,,0,,2,0,,0,,,,0,0,0,0,0,0,0,,,,0,0,,,,,,,,,,,\n")
+	srv, err := newHaproxyUnix(testSocket, "test,127.0.0.1:8080,0,0,0,0,0,0,0,0,,0,,0,0,0,0,no check,1,1,0,0,,,0,,1,1,1,,0,,2,0,,0,,,,0,0,0,0,0,0,0,,,,0,0,,,,,,,,,,,\n", testInfo)
 	if err != nil {
 		t.Fatalf("can't start test server: %v", err)
 	}
 	defer srv.Close()
 
-	e, err := NewExporter("unix:"+testSocket, true, 5*time.Second, nil)
+	e, err := NewExporter("unix:"+testSocket, true, excludedServerStates, 5*time.Second, nil, log.NewNopLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +238,7 @@ func TestUnixDomainNotFound(t *testing.T) {
 	if err := os.Remove(testSocket); err != nil && !os.IsNotExist(err) {
 		t.Fatal(err)
 	}
-	e, _ := NewExporter("unix:"+testSocket, true, 1*time.Second, nil)
+	e, _ := NewExporter("unix:"+testSocket, true, excludedServerStates, 1*time.Second, nil, log.NewNopLogger())
 	expectMetrics(t, e, "unix_domain_not_found.metrics")
 }
 
@@ -264,13 +271,13 @@ func TestUnixDomainDeadline(t *testing.T) {
 		}
 	}()
 
-	e, _ := NewExporter("unix:"+testSocket, true, 1*time.Second, nil)
+	e, _ := NewExporter("unix:"+testSocket, true, excludedServerStates, 1*time.Second, nil, log.NewNopLogger())
 
 	expectMetrics(t, e, "unix_domain_deadline.metrics")
 }
 
 func TestInvalidScheme(t *testing.T) {
-	e, err := NewExporter("gopher://gopher.quux.org", true, 1*time.Second, nil)
+	e, err := NewExporter("gopher://gopher.quux.org", true, excludedServerStates, 1*time.Second, nil, log.NewNopLogger())
 	if expect, got := (*Exporter)(nil), e; expect != got {
 		t.Errorf("expected %v, got %v", expect, got)
 	}
@@ -319,17 +326,17 @@ func TestFilterServerMetrics(t *testing.T) {
 	h := newHaproxy(config)
 	defer h.Close()
 
-	exporter, _ := NewExporter(h.URL, true, 5*time.Second, nil)
+	exporter, _ := NewExporter(h.URL, true, "", 5*time.Second, nil, log.NewNopLogger())
 	tests := []struct {
 		input string
-		want  map[int]*prometheus.Desc
+		want  map[int]metricInfo
 	}{
-		{input: "", want: map[int]*prometheus.Desc{}},
-		{input: "8", want: map[int]*prometheus.Desc{8: exporter.serverMetrics[8]}},
+		{input: "", want: map[int]metricInfo{}},
+		{input: "8", want: map[int]metricInfo{8: metricInfo{Desc: exporter.serverMetrics[8].Desc, Type: prometheus.CounterValue}}},
 		{input: serverMetricsString, want: exporter.serverMetrics},
 	}
 	for _, tt := range tests {
-		e, _ := NewExporter(h.URL, true, 5*time.Second, nil)
+		e, _ := NewExporter(h.URL, true, "", 5*time.Second, nil, log.NewNopLogger())
 
 		err := e.filterServerMetrics(tt.input)
 		if err != nil {
@@ -355,7 +362,7 @@ func BenchmarkExtract(b *testing.B) {
 	h := newHaproxy(config)
 	defer h.Close()
 
-	e, _ := NewExporter(h.URL, true, 5*time.Second, nil)
+	e, _ := NewExporter(h.URL, true, excludedServerStates, 5*time.Second, nil, log.NewNopLogger())
 
 	var before, after runtime.MemStats
 	runtime.GC()
